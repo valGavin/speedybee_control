@@ -8,8 +8,8 @@
 #include "lwip/ip_addr.h"
 
 // Configuration
-#define WIFI_SSID "val Gavin"
-#define WIFI_PASSWORD "db4ntwb4rry"
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
 #define UDP_PORT 8888
 #define CONTROL_PORT 9877
 #define LED_PIN CYW43_WL_GPIO_LED_PIN
