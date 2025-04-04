@@ -2,6 +2,8 @@
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
+#include "pico/multicore.h"
+#include "hardware/sync.h"
 #include "hardware/uart.h"
 #include "lwip/netif.h"
 #include "lwip/udp.h"
@@ -15,21 +17,26 @@
 #define LED_PIN CYW43_WL_GPIO_LED_PIN
 
 // iBUS Configuration
-#define UART_ID uart0
+#define UART_ID uart1
 #define BAUD_RATE 115200
-#define UART_TX_PIN 0
-#define UART_RX_PIN 1
+#define UART_TX_PIN 4
+#define UART_RX_PIN 5
 
 // Global variables
 char phone_ip[16] = "";
 struct udp_pcb *broadcast_pcb, *control_pcb;
 struct netif *netif;
+volatile uint16_t current_channels[14] = {
+    1500, 1500, 855, 1500, 1200, 1500, 1500,
+    1500, 1500, 1500, 1500, 1500, 1500, 1500
+};
 
 // Function declaration
 void send_broadcast(char *ip_address);
 void receive_phone_acknowledgment(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port);
 void receive_aetr_values(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port);
-void send_ibus_packet(uint16_t *channels);
+void send_ibus_packet(const uint16_t *channels);
+void core1_main();
 
 int main() {
     stdio_init_all();
@@ -38,6 +45,12 @@ int main() {
         return -1;
     }
 
+    // Initialize UART
+    uart_init(UART_ID, BAUD_RATE);
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
+    uart_set_fifo_enabled(UART_ID, true);
+
     // Blink LED at 250ms interval while connecting
     printf("Connecting to WiFi...\n");
     cyw43_arch_enable_sta_mode();
@@ -45,7 +58,7 @@ int main() {
     while (cyw43_arch_wifi_connect_blocking(WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_MIXED_PSK)) {
         cyw43_arch_gpio_put(LED_PIN, blink_state);
         blink_state = !blink_state;
-        sleep_ms(250);
+        sleep_ms(500);
     }
 
     // WiFi connected. Blink LED at one second interval
@@ -78,8 +91,22 @@ int main() {
     // Listen for AETR values from phone
     udp_recv(control_pcb, receive_aetr_values, NULL);
 
-    while (1)
-        sleep_ms(100);
+    multicore_launch_core1(core1_main);
+
+    while (true)
+        tight_loop_contents();
+}
+
+void core1_main() {
+    uint16_t channels_copy[14];
+    while (true) {
+        uint32_t status = save_and_disable_interrupts();
+        memcpy(channels_copy, (const void*)current_channels, sizeof(current_channels));
+        restore_interrupts(status);
+
+        send_ibus_packet(channels_copy);
+        sleep_ms(7);  // ~143Hz
+    }
 }
 
 /**
@@ -134,12 +161,14 @@ void receive_phone_acknowledgment(void* arg, struct udp_pcb* pcb, struct pbuf* p
  * @param port
  */
 void receive_aetr_values(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip_addr_t* addr, u16_t port) {
-    if (!p || p->len != 8) return;
+    if (!p || p->len != 10) {
+        if (p) pbuf_free(p);
+        return;
+    }
 
-    uint16_t channels[14] = {1500};  // Default iBUS values
-    memcpy(channels, p->payload, 8);
-
-    send_ibus_packet(channels);
+    uint32_t status = save_and_disable_interrupts();
+    memcpy((void*)current_channels, p->payload, 10);
+    restore_interrupts(status);
     pbuf_free(p);
 }
 
@@ -148,7 +177,7 @@ void receive_aetr_values(void* arg, struct udp_pcb* pcb, struct pbuf* p, const i
  *
  * @param channels An array of 14 channels of iBUS packets
  */
-void send_ibus_packet(uint16_t *channels) {
+void send_ibus_packet(const uint16_t *channels) {
     uint8_t packet[32];
     packet[0] = 0x20;  // iBUS start byte
     packet[1] = 0x2C;  // Packet length (32 bytes total)
@@ -166,5 +195,10 @@ void send_ibus_packet(uint16_t *channels) {
 
     uart_tx_wait_blocking(UART_ID);
     uart_write_blocking(UART_ID, packet, 32);
+
+    printf("Packet sent: ");
+    for (int i = 0; i < 32; i++)
+        printf("%02X ", packet[i]);
+    printf("\n");
 }
 

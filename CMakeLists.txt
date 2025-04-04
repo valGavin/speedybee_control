@@ -10,6 +10,7 @@ target_include_directories(picow_speedybee PRIVATE
 target_link_libraries(picow_speedybee
         pico_cyw43_arch_lwip_threadsafe_background
         pico_stdlib
+        pico_multicore
         )
 
 pico_add_extra_outputs(picow_speedybee)
