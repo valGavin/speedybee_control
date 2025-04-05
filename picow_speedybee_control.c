@@ -99,12 +99,38 @@ int main() {
 
 void core1_main() {
     uint16_t channels_copy[14];
-    while (true) {
-        uint32_t status = save_and_disable_interrupts();
-        memcpy(channels_copy, (const void*)current_channels, sizeof(current_channels));
-        restore_interrupts(status);
+    bool wifi_was_down = false;
 
-        send_ibus_packet(channels_copy);
+    const uint16_t failsafe_channels[14] = {
+        1500, 1500, 855, 1500, 1500, 1500, 1500,
+        1500, 1500, 1500, 1500, 1500, 1500, 1500
+    };
+    while (true) {
+        int wifi_status = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+        if (wifi_status == CYW43_LINK_JOIN) {
+            uint32_t status = save_and_disable_interrupts();
+            memcpy(channels_copy, (const void*)current_channels, sizeof(current_channels));
+            restore_interrupts(status);
+
+            send_ibus_packet(channels_copy);
+            if (wifi_was_down) {
+                printf("WiFi reconnected.\n");
+                wifi_was_down = false;
+            }
+        } else {
+            if (!wifi_was_down) {
+                printf("WiFi Lost\n");
+                uint32_t status = save_and_disable_interrupts();
+                memcpy((void*)current_channels, failsafe_channels, sizeof(failsafe_channels));
+                memcpy(channels_copy, failsafe_channels, sizeof(failsafe_channels));
+                restore_interrupts(status);
+
+                send_ibus_packet(channels_copy);
+
+                wifi_was_down = true;
+            }
+        }
+
         sleep_ms(7);  // ~143Hz
     }
 }
